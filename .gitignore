@@ -1,1 +1,6 @@
 build/
+cmake-build/
+.vscode/
+.vs/
+.git/
+out/
