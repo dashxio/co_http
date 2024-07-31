@@ -1,17 +1,17 @@
 #include <algorithm>
-#include <arpa/inet.h>
 #include <cassert>
-#include <fcntl.h>
 #include <map>
-#include <sys/epoll.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <netdb.h>
 #include <thread>
-#include <unistd.h>
 #include <fmt/format.h>
 #include <string.h>
 #include <vector>
+
+#include <WinSock2.h>
+#include <ws2tcpip.h>
+#include <locale.h>
+#include <iostream>
+#pragma comment(lib, "ws2_32.lib")
+
 
 int check_error(const char *msg, int res) {
     if (res == -1) {
@@ -21,7 +21,7 @@ int check_error(const char *msg, int res) {
     return res;
 }
 
-size_t check_error(const char *msg, ssize_t res) {
+size_t check_error(const char *msg, SOCKET res) {
     if (res == -1) {
         fmt::println("{}: {}", msg, strerror(errno));
         throw;
@@ -33,7 +33,7 @@ size_t check_error(const char *msg, ssize_t res) {
 
 struct socket_address_fatptr {
     struct sockaddr *m_addr;
-    socklen_t m_addrlen;
+    int m_addrlen;
 };
 
 struct socket_address_storage {
@@ -41,7 +41,7 @@ struct socket_address_storage {
         struct sockaddr m_addr;
         struct sockaddr_storage m_addr_storage;
     };
-    socklen_t m_addrlen = sizeof(struct sockaddr_storage);
+    int m_addrlen = sizeof(struct sockaddr_storage);
 
     operator socket_address_fatptr() {
         return {&m_addr, m_addrlen};
@@ -52,7 +52,7 @@ struct address_resolved_entry {
     struct addrinfo *m_curr = nullptr;
 
     socket_address_fatptr get_address() const {
-        return {m_curr->ai_addr, m_curr->ai_addrlen};
+        return {m_curr->ai_addr, static_cast<int>(m_curr->ai_addrlen)};
     }
 
     int create_socket() const {
@@ -64,8 +64,8 @@ struct address_resolved_entry {
         int sockfd = create_socket();
         socket_address_fatptr serve_addr = get_address();
         int on = 1;
-        setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
-        setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on));
+        setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (char *) & on, sizeof(on));
+        //setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on));
         CHECK_CALL(bind, sockfd, serve_addr.m_addr, serve_addr.m_addrlen);
         CHECK_CALL(listen, sockfd, SOMAXCONN);
         return sockfd;
@@ -85,8 +85,10 @@ struct address_resolver {
 
     address_resolved_entry resolve(std::string const &name, std::string const &service) {
         int err = getaddrinfo(name.c_str(), service.c_str(), NULL, &m_head);
+        //int err = GetAddrInfoA(name.c_str(), service.c_str(), NULL, &m_head);
+        std::string err_str = gai_strerror(err);
         if (err != 0) {
-            fmt::println("{} {}: {}", name, service, gai_strerror(err));
+            fmt::println("{} {}: {}", name, service, /*gai_strerror*/(err));
             throw;
         }
         return {m_head};
@@ -208,7 +210,7 @@ struct _http_base_parser {
     }
 
     std::string _headline_first() {
-        // "GET / HTTP/1.1" request
+        // "GET /path HTTP/1.1" request
         // "HTTP/1.1 200 OK" response
         auto &line = headline();
         size_t space = line.find(' ');
@@ -219,7 +221,7 @@ struct _http_base_parser {
     }
 
     std::string _headline_second() {
-        // "GET / HTTP/1.1"
+        // "GET /path HTTP/1.1"
         auto &line = headline();
         size_t space1 = line.find(' ');
         if (space1 != std::string::npos) {
@@ -233,7 +235,7 @@ struct _http_base_parser {
     }
 
     std::string _headline_third() {
-        // "GET / HTTP/1.1"
+        // "GET /path HTTP/1.1"
         auto &line = headline();
         size_t space1 = line.find(' ');
         if (space1 != std::string::npos) {
@@ -394,7 +396,14 @@ struct http_response_writer {
 std::vector<std::thread> pool;
 
 int main() {
-    setlocale(LC_ALL, "zh_CN.UTF-8");
+
+    //setlocale(LC_ALL, "zh_CN.UTF-8");
+    // 初始化Winsock
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        printf("WSAStartup failed\n");
+        return 1;
+    }
     // 注意：TCP 基于流，可能粘包
     address_resolver resolver;
     fmt::println("正在监听：127.0.0.1:8080");
@@ -402,12 +411,28 @@ int main() {
     int listenfd = entry.create_socket_and_bind();
     while (true) {
         socket_address_storage addr;
-        int connid = CHECK_CALL(accept, listenfd, &addr.m_addr, &addr.m_addrlen);
+        int connid = check_error("accept", accept(listenfd, &addr.m_addr, &addr.m_addrlen));
         pool.emplace_back([connid] {
+
+//#define MYTEST
+#ifdef MYTEST
+       
+            char buf[1024];
+            size_t n = CHECK_CALL(recv, connid, buf, sizeof(buf), 0);
+
+            auto str = std::string(buf, n);
+            fmt::println("收到请求: {}", str.data()/*, str*/);
+
+            std::string res = "HTTP/1.1 200 OK\r\nServer: co_http\r\nConnection: close\r\nContent-length: 5\r\n\r\nhello";
+            fmt::println("我的回答是: {}", res);
+            CHECK_CALL(send, connid, res.data(), res.size(), 0);
+            closesocket(connid);
+
+#else
             char buf[1024];
             http_request_parser req_parse;
             do {
-                size_t n = CHECK_CALL(read, connid, buf, sizeof(buf));
+                size_t n = CHECK_CALL(recv, connid, buf, sizeof(buf), 0);
                 req_parse.push_chunk(std::string_view(buf, n));
             } while (!req_parse.request_finished());
             fmt::println("收到请求头: {}", req_parse.headers_raw());
@@ -428,17 +453,32 @@ int main() {
             res_writer.write_header("Content-length", std::to_string(body.size()));
             res_writer.end_header();
             auto &buffer = res_writer.buffer();
-            CHECK_CALL(write, connid, buffer.data(), buffer.size());
-            CHECK_CALL(write, connid, body.data(), body.size());
+            CHECK_CALL(send, connid, buffer.data(), buffer.size(), 0);
+            CHECK_CALL(send, connid, body.data(), body.size(), 0);
 
             fmt::println("我的响应头: {}", buffer);
             fmt::println("我的响应正文: {}", body);
 
-            close(connid);
+            closesocket(connid);
+#endif
         });
     }
+
+    WSACleanup();
+
     for (auto &t: pool) {
         t.join();
     }
     return 0;
 }
+
+
+//
+//int main() {
+//    setlocale(LC_ALL, "English_United States.1252");
+//    std::string temp = gai_strerrorW(10093);
+//    std::cout << temp << "\n";
+//    //fmt::println("{} {}: {}", std::string("127.0.0.1"), std::string("8080"), temp);
+//	//fmt::println("hello world! {}", "你好！");
+//	return 0;
+//}
