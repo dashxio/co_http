@@ -5,6 +5,8 @@
 #include <fmt/format.h>
 #include <string.h>
 #include <vector>
+#include <string>
+#include <boost/locale.hpp>
 
 #include <WinSock2.h>
 #include <ws2tcpip.h>
@@ -12,19 +14,47 @@
 #include <iostream>
 #pragma comment(lib, "ws2_32.lib")
 
+using boost::locale::conv::utf_to_utf;
+using boost::locale::conv::to_utf;
+
+//std::error_category const& gai_category() {
+//    static struct final : std::error_category {
+//        const char* name() const noexcept override {
+//            return "getaddrinfo";
+//        }
+//
+//        std::string message(int err) const override {
+//            return utf_to_utf<char>(gai_strerrorW(err));
+//        }
+//    } instance;
+//    return instance;
+//}
+
+std::error_category const& utf8_system_category() {
+    static struct final : std::_System_error_category {
+        std::string message(int err) const override {
+            return to_utf<char>(_System_error_category::message(err), "GBK");
+        }
+    } instance;
+    return instance;
+}
 
 int check_error(const char *msg, int res) {
     if (res == -1) {
-        fmt::println("{}: {}", msg, strerror(errno));
-        throw;
+        //fmt::println("{}: {}", msg, strerror(errno));
+        int err_code = WSAGetLastError();
+        auto ec = std::error_code(err_code, utf8_system_category());
+        throw std::system_error(ec, msg);
     }
     return res;
 }
 
 size_t check_error(const char *msg, SOCKET res) {
     if (res == -1) {
-        fmt::println("{}: {}", msg, strerror(errno));
-        throw;
+        //fmt::println("{}: {}", msg, strerror(errno));
+        int err_code = WSAGetLastError();
+        auto ec = std::error_code(err_code, utf8_system_category());
+        throw std::system_error(ec, msg);
     }
     return res;
 }
@@ -66,7 +96,7 @@ struct address_resolved_entry {
         int on = 1;
         setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, (char *) & on, sizeof(on));
         //setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on));
-        CHECK_CALL(bind, sockfd, serve_addr.m_addr, serve_addr.m_addrlen);
+        CHECK_CALL(bind, -1, serve_addr.m_addr, serve_addr.m_addrlen);
         CHECK_CALL(listen, sockfd, SOMAXCONN);
         return sockfd;
     }
@@ -85,11 +115,12 @@ struct address_resolver {
 
     address_resolved_entry resolve(std::string const &name, std::string const &service) {
         int err = getaddrinfo(name.c_str(), service.c_str(), NULL, &m_head);
-        //int err = GetAddrInfoA(name.c_str(), service.c_str(), NULL, &m_head);
-        std::string err_str = gai_strerror(err);
         if (err != 0) {
-            fmt::println("{} {}: {}", name, service, /*gai_strerror*/(err));
-            throw;
+            //auto ec = std::error_code(err, gai_category());
+            //throw std::system_error(ec, name + ": " + service);
+            int err_code = WSAGetLastError();
+            auto ec = std::error_code(err_code, utf8_system_category());
+            throw std::system_error(ec, name + ": " + service);
         }
         return {m_head};
     }
@@ -395,28 +426,30 @@ struct http_response_writer {
 
 std::vector<std::thread> pool;
 
-int main() {
-
+void server() {
     //setlocale(LC_ALL, "zh_CN.UTF-8");
-    // 初始化Winsock
+ // 初始化Winsock
     WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        printf("WSAStartup failed\n");
-        return 1;
+    if (int res = WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        //fmt::println("WSAStartup failed");
+        auto ec = std::error_code(res, utf8_system_category());
+        throw std::system_error(ec, "WSAStartup");
+        return;
     }
     // 注意：TCP 基于流，可能粘包
     address_resolver resolver;
     fmt::println("正在监听：127.0.0.1:8080");
-    auto entry = resolver.resolve("127.0.0.1", "8080");
+    //auto entry = resolver.resolve("127.0.0.1", "8080");
+    auto entry = resolver.resolve("-1", "8080");
     int listenfd = entry.create_socket_and_bind();
     while (true) {
         socket_address_storage addr;
         int connid = check_error("accept", accept(listenfd, &addr.m_addr, &addr.m_addrlen));
         pool.emplace_back([connid] {
 
-//#define MYTEST
+            //#define MYTEST
 #ifdef MYTEST
-       
+
             char buf[1024];
             size_t n = CHECK_CALL(recv, connid, buf, sizeof(buf), 0);
 
@@ -441,7 +474,8 @@ int main() {
 
             if (body.empty()) {
                 body = "你好，你的请求正文为空哦";
-            } else {
+            }
+            else {
                 body = "你好，你的请求是: [" + body + "]";
             }
 
@@ -452,7 +486,7 @@ int main() {
             res_writer.write_header("Connection", "close");
             res_writer.write_header("Content-length", std::to_string(body.size()));
             res_writer.end_header();
-            auto &buffer = res_writer.buffer();
+            auto& buffer = res_writer.buffer();
             CHECK_CALL(send, connid, buffer.data(), buffer.size(), 0);
             CHECK_CALL(send, connid, body.data(), body.size(), 0);
 
@@ -461,10 +495,27 @@ int main() {
 
             closesocket(connid);
 #endif
-        });
+            });
     }
 
     WSACleanup();
+}
+
+int main() {
+
+#if _WIN32 // 热知识：64 位 Windows 也会定义 _WIN32 宏，所以 _WIN32 可以用于检测是否是 Windows 系统
+    setlocale(LC_ALL, ".utf-8");  // 设置标准库调用系统 API 所用的编码，用于 fopen，ifstream 等函数，这样就可以用标准库函数打印了
+    SetConsoleOutputCP(CP_UTF8); // 设置控制台输出编码，或者写 system("chcp 65001") 也行，这里 CP_UTF8 = 65001
+    SetConsoleCP(CP_UTF8); // 设置控制台输入编码，用于 std::cin
+#endif
+
+    try {
+        server();
+    }
+    catch (std::exception const & e) {
+        fmt::println("错误: {}", e.what()); //这里面调的w系的接口去打印，所以无需setlocale()也能直接打印utf8字符
+        //std::cout << e.what() << "\n"; //这里面调的a系接口去打印，所以需要setlocale(LC_ALL, ".utf-8")才能打印utf8字符
+    }
 
     for (auto &t: pool) {
         t.join();
