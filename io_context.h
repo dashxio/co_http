@@ -100,7 +100,7 @@ struct async_file : file_descriptor {
         DWORD dw_flags = 0;
         auto ret = convert_error(WSARecv(m_fd, &wsa_buf, 1, NULL, &dw_flags, lp, NULL));
         if (ret.error() && !ret.is_error(WSA_IO_PENDING)) {
-            fmt::println("连接错误地断开了。。。");
+            //fmt::println("连接错误地断开了。。。");
             return;
         }
     }
@@ -110,7 +110,7 @@ struct async_file : file_descriptor {
         DWORD dw_flags = 0;
         auto ret = convert_error(WSASend(m_fd, &wsa_buf, 1, NULL, dw_flags, lp, NULL));
         if (ret.error() && !ret.is_error(WSA_IO_PENDING)) {
-            fmt::println("连接错误地断开了。。。");
+            //fmt::println("连接错误地断开了。。。");
             return;
         }
     }
@@ -118,7 +118,7 @@ struct async_file : file_descriptor {
     decltype(auto) async_accept(address_resolver::address& addr, LPWSAOVERLAPPED lp) {
         auto ret = convert_error(WSAAccept(m_fd, &addr.m_addr, (int*)&addr.m_addrlen, NULL, 0));
         if (ret.is_error(WSAEWOULDBLOCK)) {
-            convert_error<FALSE, ForGetLastError>(PostQueuedCompletionStatus(io_context::get().m_cphd, 0, (ULONG_PTR)&m_com_key, lp)).expect("Post Status");
+            convert_error<FALSE, ForGetLastError>(PostQueuedCompletionStatus(io_context::get().m_cphd, 1, (ULONG_PTR)&m_com_key, lp)).expect("Post Status");
         }
         return ret.raw_value();
     }

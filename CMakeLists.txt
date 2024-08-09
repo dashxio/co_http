@@ -17,10 +17,8 @@ else()
 endif()
 
 # 编译配置
-set(CMAKE_BUILD_TYPE Debug)
-if (NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Release)
-endif()
+#set(CMAKE_BUILD_TYPE Debug)
+set(CMAKE_BUILD_TYPE Release)
 
 # 设置C++标准
 set(CMAKE_CXX_STANDARD 17)

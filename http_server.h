@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include "io_context.h"
 #include "http_parser.hpp"
+#include <optional>
 
 struct HttpServer;
 
@@ -50,7 +51,7 @@ struct HttpServer : std::enable_shared_from_this<HttpServer> {
     async_file m_conn;
     bytes_buffer m_readbuf{ 1024 };
     //size_t m_expected_complete_bytes_num = 0;
-    size_t m_really_complete_bytes_num = 0;
+    std::optional<size_t> m_really_complete_bytes_num = std::nullopt;
     http_request_parser<> m_req_parser;
     http_response_writer<> m_res_writer;
 
@@ -69,7 +70,7 @@ struct HttpServer : std::enable_shared_from_this<HttpServer> {
 
     //}
 
-    void update(size_t io_bytes_num = 0) {
+    void update(std::optional<size_t> io_bytes_num = std::nullopt) {
         m_really_complete_bytes_num = io_bytes_num;
         m_state->update(this);
     }
@@ -78,5 +79,5 @@ struct HttpServer : std::enable_shared_from_this<HttpServer> {
         return update();
     }
 
-    ~HttpServer();
+    //~HttpServer();
 };

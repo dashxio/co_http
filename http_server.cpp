@@ -23,10 +23,10 @@ std::shared_ptr<HttpServer> HttpServer::makeServerWithConnectSocket(SOCKET socke
 	return h;
 }
 
-HttpServer::~HttpServer()
-{
-	fmt::println("一个连接断开了：{}", m_conn.m_fd);
-}
+//HttpServer::~HttpServer()
+//{
+//	fmt::println("一个连接断开了：{}", m_conn.m_fd);
+//}
 
 void AcceptState::update(HttpServer* h) {
 
@@ -35,15 +35,19 @@ void AcceptState::update(HttpServer* h) {
         if (conn_socket == INVALID_SOCKET) {
             return;
         }
-        fmt::println("接受了一个连接：{}", conn_socket);
+        //fmt::println("接受了一个连接：{}", conn_socket);
         HttpServer::makeServerWithConnectSocket(conn_socket)->start();
     }
 }
 
 void ReadState::update(HttpServer* h) {
 
-    if (h->m_really_complete_bytes_num != 0) {
-        h->m_req_parser.push_chunk(h->m_readbuf.subspan(0, h->m_really_complete_bytes_num));
+    if (h->m_really_complete_bytes_num) {
+        if (*h->m_really_complete_bytes_num == 0) {
+            //fmt::println("一个连接断开了：{}", h->m_conn.m_fd);
+            return;
+        }
+        h->m_req_parser.push_chunk(h->m_readbuf.subspan(0, *h->m_really_complete_bytes_num));
     }
 
     if (h->m_req_parser.request_finished()) {
@@ -83,13 +87,19 @@ void HandleRequestState::update(HttpServer* h) {
 
 void WriteState::update(HttpServer* h) {
 
-    if (!h->m_res_writer.write_finished(h->m_really_complete_bytes_num)) {
+    if (h->m_really_complete_bytes_num && *h->m_really_complete_bytes_num == 0) {
+        //fmt::println("一个连接断开了：{}", h->m_conn.m_fd);
+		return;
+    }
+
+    if (!h->m_res_writer.write_finished(h->m_really_complete_bytes_num.value_or(0))) {
         h->m_conn.async_write(h->m_res_writer.buffer_need_to_write(), h->getOverlappedSkin());
     }
     else {
         h->m_res_writer.reset_state();
         h->setState(std::make_unique<ReadState>().release())->update();
     }
+
 }
 
 //struct HttpServer : std::enable_shared_from_this<HttpServer> {
